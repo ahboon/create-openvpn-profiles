@@ -3,22 +3,37 @@ import os
 import subprocess
 import re
 import base64
+import hmac
 from pathlib import Path
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
+PRE_SHARED_KEY = b"0123456789abcdef0123456789abcdef" # Change me
+
 EASYRSA_DIR = Path("/etc/openvpn/server/easy-rsa")
 CLIENT_COMMON = Path("/etc/openvpn/server/client-common.txt")
 OUTPUT_DIR = Path("/tmp")   # where generated profiles are stored
 
+if len(PRE_SHARED_KEY) != 32:
+    raise ValueError("PRE_SHARED_KEY must be exactly 32 bytes")
+
 def run(cmd):
     subprocess.run(cmd, check=True)
+
+def is_authorized():
+    provided = request.headers.get("X-Pre-Shared-Key", "")
+    if not isinstance(provided, (bytes, bytearray)):
+        provided = provided.encode("utf-8", errors="ignore")
+    return hmac.compare_digest(provided, PRE_SHARED_KEY)
 
 @app.route("/create", methods=["GET"])
 def create_client():
     if os.geteuid() != 0:
         return jsonify({"error": "This API must run as root."}), 403
+
+    if not is_authorized():
+        return jsonify({"error": "Invalid or missing pre-shared key."}), 403
 
     client = request.args.get("client")
     if not client:
@@ -62,6 +77,9 @@ def create_client():
 def delete_client():
     if os.geteuid() != 0:
         return jsonify({"error": "This API must run as root."}), 403
+
+    if not is_authorized():
+        return jsonify({"error": "Invalid or missing pre-shared key."}), 403
 
     data = request.get_json(force=True)
     client = data.get("client") if data else None
